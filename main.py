@@ -17,6 +17,10 @@ import aiohttp
 from dotenv import load_dotenv
 import os
 
+from discord.ext import commands
+from discord import app_commands
+
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -24,8 +28,10 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_COMFY")  # Discord bot token
 N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL")  # n8n webhook URL for ComfyUI integration
 DISCORD_CHANNEL_NAME = os.getenv("DISCORD_CHANNEL_NAME")  # Target Discord channel name
+DISCORD_GUILD_ID = int(os.getenv("DISCORD_GUILD_ID", 0))  # Discord Guild ID for command syncing
 
-class Client(discord.Client):
+
+class Client(commands.Bot):
     """
     Custom Discord client for ComfyUI integration.
     
@@ -40,6 +46,13 @@ class Client(discord.Client):
         Prints a confirmation message with the bot's username.
         """
         print(f'Logged in as {self.user}')
+        
+        try:
+            guild = discord.Object(id=DISCORD_GUILD_ID)
+            synced = await self.tree.sync(guild=guild)
+            print(f'Synced {len(synced)} command(s) to guild {guild.id}')
+        except Exception as e:
+            print(f"Error syncing commands: {e}")
 
     async def on_message(self, message):
         """
@@ -95,7 +108,50 @@ def main():
     intents.message_content = True  # Required to read message content for commands
     
     # Create and run the Discord client
-    client = Client(intents=intents)
+    client = Client(command_prefix='!', intents=intents)
+    
+    guild = discord.Object(id=DISCORD_GUILD_ID)
+
+    @client.tree.command(name="help", description="Show available commands", guild=guild)
+    async def help_command(interaction: discord.Interaction):
+        """
+        Slash command to display available bot commands.
+        
+        Args:
+            interaction (discord.Interaction): The interaction object representing
+                                               the slash command invocation.
+        """
+        await interaction.response.send_message("""
+Welcome to the ComfyUI Discord Bot! Here are the commands you can use:
+- `/prompt <your prompt>`: Send a prompt to ComfyUI.
+- `/help`: Display this help message.
+""")
+        
+        
+    @client.tree.command(name="prompt", description="Send a prompt to ComfyUI", guild=guild)
+    @app_commands.describe(prompt="The prompt text to send to ComfyUI")
+    async def prompt_command(interaction: discord.Interaction, prompt: str):
+        """
+        Slash command to send a prompt to ComfyUI via n8n webhook.
+        
+        Args:
+            interaction (discord.Interaction): The interaction object representing
+                                               the slash command invocation.
+            prompt (str): The prompt text provided by the user.
+        """
+        if prompt:
+            try:
+                # Send prompt to n8n webhook for ComfyUI processing
+                async with aiohttp.ClientSession() as session:
+                    await session.post(N8N_WEBHOOK_URL, json={"prompt": prompt})
+                await interaction.response.send_message("Your prompt has been sent to ComfyUI!")
+            except Exception as e:
+                # Log error if webhook request fails
+                print(f"Error sending prompt to webhook: {e}")
+                await interaction.response.send_message("Sorry, there was an error processing your prompt.")
+        else:
+            await interaction.response.send_message("Please provide a valid prompt.")
+            
     
     try:
         # Start the bot - this blocks until the bot is stopped
